@@ -1,73 +1,77 @@
-#!/usr/bin/python
-import smbus
-import math
-import time 
+__author__ = 'Geir Istad'
+"""
+MPU6050 Python I2C Class - MPU6050 example usage
+Copyright (c) 2015 Geir Istad
 
-# Register
-power_mgmt_1 = 0x6b
-power_mgmt_2 = 0x6c
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-def read_byte(reg):
-	return bus.read_byte_data(address, reg)
-	
-def read_word(reg):
-	h = bus.read_byte_data(address, reg)
-	l = bus.read_byte_data(address, reg+1)
-	value = (h << 8) + l
-	return value
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-def read_word_2c(reg):
-	val = read_word(reg)
-	if (val >= 0x8000):
-		return -((65535 - val) + 1)
-	else:
-		return val
-		
-def dist(a,b):
-	return math.sqrt((a*a)+(b*b))
-	
-def get_y_rotation(x,y,z):
-	radians = math.atan2(x, dist(y,z))
-	return -math.degrees(radians)
-	
-def get_x_rotation(x,y,z):
-	radians = math.atan2(y, dist(x,z))
-	return math.degrees(radians)
-	
-bus = smbus.SMBus(1) # bus = smbus.SMBus(0) fuer Revision 1
-address = 0x68 			# via i2detect
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"""
 
-bus.write_byte_data(address, power_mgmt_1, 0)
+from MPU6050 import MPU6050
 
-while True:
-	
-	print "Gyroskop"
-	print "--------"
+i2c_bus = 1
+device_address = 0x68
+# The offsets are different for each device and should be changed
+# accordingly using a calibration procedure
+x_accel_offset = -430
+y_accel_offset = 958
+z_accel_offset = -258
+x_gyro_offset = 33
+y_gyro_offset = 41
+z_gyro_offset = 5
+enable_debug_output = False
 
-	gyroskop_xout = read_word_2c(0x43)
-	gyroskop_yout = read_word_2c(0x45)
-	gyroskop_zout = read_word_2c(0x47)
+mpu = MPU6050(i2c_bus, device_address, x_accel_offset, y_accel_offset,
+              z_accel_offset, x_gyro_offset, y_gyro_offset, z_gyro_offset,
+              enable_debug_output)
 
-	print "gyroskop_xout: ", ("%6d" % gyroskop_xout), " skaliert: ", (gyroskop_xout / 131)
-	print "gyroskop_yout: ", ("%6d" % gyroskop_yout), " skaliert: ", (gyroskop_yout / 131)
-	print "gyroskop_zout: ", ("%6d" % gyroskop_zout), " skaliert: ", (gyroskop_zout / 131)
+mpu.dmp_initialize()
+mpu.set_DMP_enabled(True)
+mpu_int_status = mpu.get_int_status()
+print(hex(mpu_int_status))
 
-	print "Beschkeunigungssensor"
-	print "--------"
+packet_size = mpu.DMP_get_FIFO_packet_size()
+print(packet_size)
+FIFO_count = mpu.get_FIFO_count()
+print(FIFO_count)
 
-	beschkeunigung_xout = read_word_2c(0x3b)
-	beschkeunigung_yout = read_word_2c(0x3d)
-	beschkeunigung_zout = read_word_2c(0x3f)
+count = 0
+FIFO_buffer = [0] * 64
 
-	beschkeunigung_xout_skaliert = beschkeunigung_xout / 16384.0
-	beschkeunigung_yout_skaliert = beschkeunigung_yout / 16384.0
-	beschkeunigung_zout_skaliert = beschkeunigung_zout / 16384.0
+while count < 10000:
+    FIFO_count = mpu.get_FIFO_count()
+    mpu_int_status = mpu.get_int_status()
 
-	print "beschkeunigung_xout: ", ("%6d" % beschkeunigung_xout), " skaliert: ", beschkeunigung_xout_skaliert
-	print "beschkeunigung_yout: ", ("%6d" % beschkeunigung_yout), " skaliert: ", beschkeunigung_yout_skaliert
-	print "beschkeunigung_zout: ", ("%6d" % beschkeunigung_zout), " skaliert: ", beschkeunigung_zout_skaliert
-
-
-	print "X rotation: ", get_x_rotation(beschkeunigung_xout_skaliert,beschkeunigung_yout_skaliert,beschkeunigung_zout_skaliert)
-	print "Y rotation: ", get_y_rotation(beschkeunigung_xout_skaliert,beschkeunigung_yout_skaliert,beschkeunigung_zout_skaliert)
-	time.sleep(0.2)
+    # If overflow is detected by status or fifo count we want to reset
+    if (FIFO_count == 1024) or (mpu_int_status & 0x10):
+        mpu.reset_FIFO()
+    # Check if fifo data is ready
+    elif mpu_int_status & 0x02:
+        # Wait until packet_size number of bytes are ready for reading, default
+        # is 42 bytes
+        while FIFO_count < packet_size:
+            FIFO_count = mpu.get_FIFO_count()
+        FIFO_buffer = mpu.get_FIFO_bytes(packet_size)
+        accel = mpu.DMP_get_acceleration_int16(FIFO_buffer)
+        quat = mpu.DMP_get_quaternion_int16(FIFO_buffer)
+        grav = mpu.DMP_get_gravity(quat)
+        roll_pitch_yaw = mpu.DMP_get_euler_roll_pitch_yaw(quat, grav)
+        if count % 10 == 0:
+            print('{0:.5g};'.format(roll_pitch_yaw.x) + '{0:.5g};'.format(roll_pitch_yaw.y) +
+                  '{0:.5g}'.format(roll_pitch_yaw.z))
+        count += 1
